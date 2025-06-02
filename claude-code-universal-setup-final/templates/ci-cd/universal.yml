@@ -1,0 +1,291 @@
+name: Claude Code Enhanced CI/CD
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+jobs:
+  # AI-powered code analysis
+  ai-analysis:
+    runs-on: ubuntu-latest
+    outputs:
+      has-changes: ${{ steps.changes.outputs.has-changes }}
+      security-issues: ${{ steps.security.outputs.issues }}
+      
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup Claude Code
+      run: |
+        npm install -g claude-code
+        claude config set allowed-tools "Read,Grep,Glob,Bash(git:*)"
+    
+    - name: Detect Changes
+      id: changes
+      run: |
+        if [[ ${{ github.event_name }} == 'pull_request' ]]; then
+          changes=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | wc -l)
+        else
+          changes=$(git diff --name-only HEAD~1..HEAD | wc -l)
+        fi
+        echo "has-changes=$([[ $changes -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+    
+    - name: AI Security Analysis
+      id: security
+      if: steps.changes.outputs.has-changes == 'true'
+      run: |
+        claude -f json -p "Perform security analysis of changed files. Focus on:
+        1. Authentication and authorization issues
+        2. Input validation problems
+        3. Security misconfigurations
+        4. Potential vulnerabilities
+        5. Sensitive data exposure
+        
+        Return findings in structured format." > security-analysis.json
+        
+        issues=$(jq -r '.result' security-analysis.json | grep -c "SECURITY ISSUE" || echo "0")
+        echo "issues=$issues" >> $GITHUB_OUTPUT
+        
+        if [[ $issues -gt 0 ]]; then
+          echo "🚨 Security issues detected!" >> $GITHUB_STEP_SUMMARY
+          jq -r '.result' security-analysis.json >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Upload Security Analysis
+      if: steps.changes.outputs.has-changes == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-analysis
+        path: security-analysis.json
+
+  # Comprehensive testing with AI enhancement
+  test-and-quality:
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+    if: needs.ai-analysis.outputs.has-changes == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Claude Code
+      run: |
+        npm install -g claude-code
+        claude config set allowed-tools "Read,Write,Edit,Bash(*)"
+    
+    - name: Setup Environment
+      run: |
+        # Auto-detect and setup based on project type
+        if [[ -f "package.json" ]]; then
+          echo "Setting up Node.js environment"
+          node_version=$(grep -o '"node": "[^"]*"' package.json | cut -d'"' -f4 || echo "18")
+          echo "NODE_VERSION=$node_version" >> $GITHUB_ENV
+        elif [[ -f "requirements.txt" ]]; then
+          echo "Setting up Python environment"
+          echo "PYTHON_VERSION=3.9" >> $GITHUB_ENV
+        elif [[ -f "pubspec.yaml" ]]; then
+          echo "Setting up Flutter environment"
+          echo "FLUTTER_VERSION=3.16.0" >> $GITHUB_ENV
+        fi
+    
+    - name: Setup Node.js
+      if: env.NODE_VERSION
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+    
+    - name: Setup Python
+      if: env.PYTHON_VERSION
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Setup Flutter
+      if: env.FLUTTER_VERSION
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+    
+    - name: Install Dependencies
+      run: |
+        if [[ -f "package.json" ]]; then
+          npm ci
+        elif [[ -f "requirements.txt" ]]; then
+          pip install -r requirements.txt
+        elif [[ -f "pubspec.yaml" ]]; then
+          flutter pub get
+        fi
+    
+    - name: AI-Enhanced Test Generation
+      run: |
+        claude -p "Analyze the current test coverage and generate additional tests for:
+        1. Edge cases not currently covered
+        2. Error scenarios and exception handling
+        3. Integration points between components
+        4. Performance and load testing scenarios
+        
+        Focus on critical paths and recent changes." > ai-test-suggestions.md
+    
+    - name: Run Tests
+      run: |
+        if [[ -f "package.json" ]] && grep -q "test" package.json; then
+          npm test
+        elif [[ -f "requirements.txt" ]] && command -v pytest &> /dev/null; then
+          pytest
+        elif [[ -f "manage.py" ]]; then
+          python manage.py test
+        elif [[ -f "pubspec.yaml" ]]; then
+          flutter test
+        fi
+    
+    - name: AI Code Quality Analysis
+      run: |
+        claude -f json -p "Perform comprehensive code quality analysis:
+        1. Code complexity and maintainability
+        2. Performance bottlenecks
+        3. Best practices adherence
+        4. Technical debt identification
+        5. Refactoring opportunities
+        
+        Provide specific recommendations with priority levels." > quality-analysis.json
+    
+    - name: Upload Quality Analysis
+      uses: actions/upload-artifact@v4
+      with:
+        name: quality-analysis
+        path: |
+          quality-analysis.json
+          ai-test-suggestions.md
+
+  # AI-powered code review
+  ai-code-review:
+    runs-on: ubuntu-latest
+    needs: [ai-analysis, test-and-quality]
+    if: github.event_name == 'pull_request' && needs.ai-analysis.outputs.has-changes == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Claude Code
+      run: |
+        npm install -g claude-code
+        claude config set allowed-tools "Read,Grep,Glob,Bash(git:*)"
+    
+    - name: Comprehensive AI Review
+      run: |
+        # Get changed files
+        git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} > changed-files.txt
+        
+        claude -f json -p "Perform comprehensive code review of these changed files:
+        $(cat changed-files.txt)
+        
+        Focus on:
+        1. Code quality and maintainability
+        2. Performance implications
+        3. Security considerations
+        4. Best practices adherence
+        5. Architecture and design patterns
+        6. Testing completeness
+        
+        Provide specific, actionable feedback with examples." > comprehensive-review.json
+    
+    - name: Generate Review Summary
+      run: |
+        claude -p "Create a concise, actionable PR review summary from the comprehensive analysis. Format for GitHub comment with clear sections and specific recommendations." > review-summary.md
+    
+    - name: Comment on PR
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('review-summary.md', 'utf8');
+          
+          const comment = `## 🤖 AI Code Review Summary
+          
+          ${summary}
+          
+          <details>
+          <summary>📊 Detailed Analysis</summary>
+          
+          Full analysis available in workflow artifacts.
+          </details>
+          
+          ---
+          *Generated by Claude Code CI/CD Pipeline*
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Upload Review Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ai-code-review
+        path: |
+          comprehensive-review.json
+          review-summary.md
+
+  # Security gate
+  security-gate:
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+    if: needs.ai-analysis.outputs.security-issues != '0'
+    
+    steps:
+    - name: Security Issues Detected
+      run: |
+        echo "🚨 Security issues detected in AI analysis!"
+        echo "Please review the security analysis artifact and address issues before merging."
+        exit 1
+
+  # AI-powered documentation updates
+  update-documentation:
+    runs-on: ubuntu-latest
+    needs: [test-and-quality]
+    if: github.ref == 'refs/heads/main' && needs.ai-analysis.outputs.has-changes == 'true'
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Claude Code
+      run: |
+        npm install -g claude-code
+        claude config set allowed-tools "Read,Write,Edit,Bash(git:*)"
+    
+    - name: Update Documentation
+      run: |
+        claude -p "Update project documentation based on recent changes:
+        1. Update CLAUDE.md if project structure changed
+        2. Update API documentation for new endpoints
+        3. Update README if new features were added
+        4. Generate changelog entry for recent changes
+        
+        Ensure all documentation is accurate and up-to-date."
+    
+    - name: Commit Documentation Updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        if [[ -n "$(git status --porcelain)" ]]; then
+          git add .
+          git commit -m "docs: AI-generated documentation updates
+          
+          🤖 Generated by Claude Code CI/CD Pipeline
+          
+          Co-authored-by: Claude <noreply@anthropic.com>"
+          git push
+        fi
